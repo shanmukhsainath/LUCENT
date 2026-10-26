@@ -1,4 +1,4 @@
-const API_URL = window.MEETMIND_API_URL || 'http://localhost:8000';
+const API_URL = window.MEETMIND_API_URL || (window.location.protocol.startsWith('http') ? window.location.origin : 'http://localhost:8000');
 const TOKEN_KEY = 'meetmind_access_token';
 const token = sessionStorage.getItem(TOKEN_KEY);
 const loginPath = window.location.pathname.includes('/meetings/create/') || window.location.pathname.includes('/meetings/join/')

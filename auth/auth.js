@@ -1,4 +1,4 @@
-const API_URL = window.MEETMIND_API_URL || 'http://localhost:8000';
+const API_URL = window.MEETMIND_API_URL || (window.location.protocol.startsWith('http') ? window.location.origin : 'http://localhost:8000');
 const TOKEN_KEY = 'meetmind_access_token';
 
 function getToken() {

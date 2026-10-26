@@ -1,5 +1,5 @@
 const TOKEN_KEY = 'meetmind_access_token';
-const API_URL = window.MEETMIND_API_URL || 'http://localhost:8000';
+const API_URL = window.MEETMIND_API_URL || (window.location.protocol.startsWith('http') ? window.location.origin : 'http://localhost:8000');
 const accessToken = sessionStorage.getItem(TOKEN_KEY);
 if (!accessToken) window.location.href = 'login/index.html';
 

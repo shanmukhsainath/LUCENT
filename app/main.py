@@ -1,5 +1,9 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -30,6 +34,25 @@ app.include_router(summaries_router)
 app.include_router(tasks_router)
 app.include_router(websocket_router)
 
+FRONTEND_ROOT = Path(__file__).resolve().parents[1]
+
+
+class PublicStaticFiles(StaticFiles):
+    """Serve the browser app without exposing backend or deployment files."""
+
+    async def get_response(self, path: str, scope: dict):
+        request_path = scope.get("path", f"/{path}")
+        first_segment = request_path.lstrip("/").split("/", 1)[0]
+        if (
+            first_segment.startswith(".")
+            or first_segment in {"app", "alembic", "docs", ".venv"}
+            or path in {".env", ".env.example", "requirements.txt", "alembic.ini"}
+        ):
+            from starlette.responses import Response
+
+            return Response(status_code=404)
+        return await super().get_response(path, scope)
+
 
 @app.get("/health", tags=["system"])
 def health_check() -> dict[str, str]:
@@ -40,3 +63,11 @@ def health_check() -> dict[str, str]:
         return {"status": "ok", "database": "connected"}
     except SQLAlchemyError:
         return {"status": "degraded", "database": "unreachable"}
+
+
+@app.get("/", include_in_schema=False)
+def frontend_root() -> FileResponse:
+    return FileResponse(FRONTEND_ROOT / "index.html")
+
+
+app.mount("/", PublicStaticFiles(directory=FRONTEND_ROOT, html=True), name="frontend")
