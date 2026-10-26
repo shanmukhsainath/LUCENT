@@ -18,7 +18,7 @@ class MeetingWebSocketService {
     this.closedByClient = false;
     this.onStatus?.('connecting');
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.MEETMIND_WS_URL || `${protocol}//${window.location.host || 'localhost:8000'}`;
+    const host = window.MEETMIND_WS_URL || ((window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && window.location.port !== '8000' ? `${protocol}//${window.location.hostname}:8000` : `${protocol}//${window.location.host || 'localhost:8000'}`);
     this.socket = new WebSocket(`${host}/ws/meetings/${encodeURIComponent(this.meetingId)}?token=${encodeURIComponent(this.token)}`);
     this.socket.addEventListener('open', () => {
       this.reconnectAttempt = 0;
