@@ -1,0 +1,37 @@
+from app.models.base import Base
+from app.models.entities import (
+    Document,
+    DocumentStatus,
+    Meeting,
+    MeetingStatus,
+    Note,
+    Participant,
+    ParticipantRole,
+    Question,
+    Summary,
+    Task,
+    TaskPriority,
+    TaskStatus,
+    Transcript,
+    Translation,
+    User,
+)
+
+__all__ = [
+    "Base",
+    "Document",
+    "DocumentStatus",
+    "Meeting",
+    "MeetingStatus",
+    "Note",
+    "Participant",
+    "ParticipantRole",
+    "Question",
+    "Summary",
+    "Task",
+    "TaskPriority",
+    "TaskStatus",
+    "Transcript",
+    "Translation",
+    "User",
+]

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard | MeetMind AI</title>
+  <meta name="description" content="MeetMind AI authenticated workspace dashboard" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="dashboard.css" />
+</head>
+<body>
+  <div class="dashboard-shell">
+    <aside class="sidebar" id="sidebar"></aside>
+    <div class="dashboard-main">
+      <header class="dashboard-header" id="header"></header>
+      <main class="dashboard-content">
+        <section class="welcome-row">
+          <div><p class="eyebrow" id="dateLabel">TODAY</p><h1>Good morning, <span id="welcomeName">there</span> <span class="spark">✦</span></h1><p class="muted">Your meeting workspace is ready when you are.</p></div>
+          <div class="header-actions"><button class="icon-button" aria-label="Notifications">♧<span class="notification-dot"></span></button><button class="button button-primary" data-action="create-meeting"><span>＋</span> Create meeting</button></div>
+        </section>
+
+        <section class="stats-grid" id="stats" aria-label="Dashboard statistics"></section>
+
+        <section class="primary-actions" aria-label="Meeting actions">
+          <article class="action-card action-create"><div class="action-icon">＋</div><div><p class="eyebrow">START SOMETHING NEW</p><h2>Create a meeting</h2><p>Set up a workspace for your next conversation.</p></div><button class="button button-light" data-action="create-meeting">Create <span>→</span></button></article>
+          <article class="action-card action-join"><div class="action-icon">↗</div><div><p class="eyebrow">HAVE AN INVITE?</p><h2>Join a meeting</h2><p>Enter a meeting link or room code to continue.</p></div><button class="button button-outline" data-action="join-meeting">Join <span>→</span></button></article>
+        </section>
+
+        <section class="section-block"><div class="section-heading"><div><p class="eyebrow">YOUR WORKSPACE</p><h2>Meetings</h2></div><a class="section-link" href="#recent">View all <span>→</span></a></div><div class="meeting-grid" id="recentMeetings"></div></section>
+        <section class="section-block split-block"><div><div class="section-heading"><div><p class="eyebrow">PLAN AHEAD</p><h2>Upcoming meetings</h2></div><button class="text-button" data-action="calendar">Calendar ↗</button></div><div id="upcomingMeetings"></div></div><div><div class="section-heading"><div><p class="eyebrow">YOUR FOLLOW-UPS</p><h2>Pending tasks</h2></div><a class="section-link" href="#tasks">View all <span>→</span></a></div><div id="pendingTasks"></div></div></section>
+
+        <section class="section-block"><div class="section-heading"><div><p class="eyebrow">MEETMIND TOOLS</p><h2>Quick AI actions</h2></div><span class="availability">Available with meeting content</span></div><div class="ai-actions" id="quickActions"></div></section>
+        <p class="privacy-footer">Your workspace is private. Meeting intelligence appears here only after you connect meeting content.</p>
+      </main>
+    </div>
+  </div>
+  <div class="modal hidden" id="actionModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal-card"><button class="modal-close" id="closeModal" aria-label="Close">×</button><span class="modal-icon" id="modalIcon">✦</span><p class="eyebrow" id="modalEyebrow">MEETING WORKSPACE</p><h2 id="modalTitle">Coming next.</h2><p class="muted" id="modalMessage">Meeting creation is not connected yet. This dashboard is ready for the meeting engine.</p><button class="button button-primary modal-button" id="modalDone">Got it</button></div></div>
+  <div class="modal hidden" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle"><div class="modal-card settings-card"><button class="modal-close" data-action="close-settings" aria-label="Close">×</button><p class="eyebrow">ACCOUNT SETTINGS</p><h2 id="settingsTitle">Your profile</h2><form id="settingsForm"><label>Name<input name="name" required minlength="2" maxlength="120"/></label><label>Preferred language<select name="preferred_language"><option value="en">English</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option><option value="hi">Hindi</option></select></label><label>Timezone<input name="timezone" maxlength="64" placeholder="Asia/Kolkata"/></label><p class="muted" id="settingsState">Changes are saved to your account.</p><button class="button button-primary modal-button" type="submit">Save changes</button></form></div></div>
+  <script src="dashboard.js"></script>
+</body>
+</html>
