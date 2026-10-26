@@ -1,75 +1,18 @@
-import asyncio
 import json
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
 from uuid import UUID
 
 import jwt
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user
 from app.core.security import decode_access_token
 from app.database.session import get_db
-from app.models import Meeting, Participant, Transcript, User
+from app.models import Meeting, MeetingSettings, Participant, ParticipantRole, Transcript, User
+from app.realtime.manager import manager
 from app.services.speech_service import SpeechServiceError, get_speech_service
-from app.schemas.websocket import DevelopmentEventRequest
-
-
-class MeetingConnectionManager:
-    def __init__(self) -> None:
-        self._connections: dict[UUID, dict[UUID, set[WebSocket]]] = defaultdict(lambda: defaultdict(set))
-
-    async def connect(self, meeting_id: UUID, user_id: UUID, websocket: WebSocket) -> None:
-        await websocket.accept()
-        self._connections[meeting_id][user_id].add(websocket)
-
-    def disconnect(self, meeting_id: UUID, user_id: UUID, websocket: WebSocket) -> None:
-        user_connections = self._connections.get(meeting_id, {}).get(user_id)
-        if not user_connections:
-            return
-        user_connections.discard(websocket)
-        if not user_connections:
-            self._connections[meeting_id].pop(user_id, None)
-        if not self._connections.get(meeting_id):
-            self._connections.pop(meeting_id, None)
-
-    async def broadcast(self, meeting_id: UUID, message: dict, exclude: WebSocket | None = None) -> None:
-        stale_connections: list[tuple[UUID, WebSocket]] = []
-        for user_id, connections in list(self._connections.get(meeting_id, {}).items()):
-            for websocket in list(connections):
-                if websocket is exclude:
-                    continue
-                try:
-                    await websocket.send_json(message)
-                except Exception:
-                    stale_connections.append((user_id, websocket))
-        for user_id, websocket in stale_connections:
-            self.disconnect(meeting_id, user_id, websocket)
-
-    async def send_to_user(self, meeting_id: UUID, user_id: UUID, message: dict) -> bool:
-        connections = list(self._connections.get(meeting_id, {}).get(user_id, set()))
-        delivered = False
-        for websocket in connections:
-            try:
-                await websocket.send_json(message)
-                delivered = True
-            except Exception:
-                self.disconnect(meeting_id, user_id, websocket)
-        return delivered
-
-    def connected_users(self, meeting_id: UUID) -> list[UUID]:
-        return list(self._connections.get(meeting_id, {}).keys())
-
-    async def send_error(self, websocket: WebSocket, code: str, message: str) -> None:
-        await websocket.send_json({"type": "ERROR", "payload": {"code": code, "message": message}})
-
-
-manager = MeetingConnectionManager()
 websocket_router = APIRouter(tags=["realtime"])
-development_router = APIRouter(prefix="/api/meetings", tags=["realtime-development"])
 
 
 def authenticated_user_from_token(token: str, db: Session) -> User | None:
@@ -101,6 +44,49 @@ def user_label(user: User) -> dict[str, str]:
     return {"user_id": str(user.id), "name": user.name}
 
 
+def participant_presence(meeting_id: UUID, user_id: UUID, db: Session) -> dict:
+    user = db.get(User, user_id)
+    role = participant_role(meeting_id, user_id, db)
+    state = manager.get_user_media_state(meeting_id, user_id)
+    return {
+        **user_label(user),
+        "audio_enabled": bool(state and state.audio_enabled),
+        "video_enabled": bool(state and state.video_enabled),
+        "role": role.value if role else None,
+    }
+
+
+def participant_role(meeting_id: UUID, user_id: UUID, db: Session) -> ParticipantRole | None:
+    return db.scalar(
+        select(Participant.role).where(
+            Participant.meeting_id == meeting_id,
+            Participant.user_id == user_id,
+            Participant.left_at.is_(None),
+        )
+    )
+
+
+def meeting_settings(meeting_id: UUID, db: Session) -> MeetingSettings | None:
+    meeting = db.get(Meeting, meeting_id)
+    if meeting is None:
+        return None
+    settings = db.scalar(select(MeetingSettings).where(MeetingSettings.meeting_id == meeting_id))
+    if settings is None:
+        settings = MeetingSettings(meeting_id=meeting_id)
+        db.add(settings)
+        db.commit()
+    else:
+        db.refresh(settings)
+    return settings
+
+
+def state_satisfies_settings(settings: MeetingSettings, audio_enabled: bool, video_enabled: bool) -> bool:
+    return (
+        (not settings.camera_required or video_enabled)
+        and (not settings.microphone_required or audio_enabled)
+    )
+
+
 @websocket_router.websocket("/ws/meetings/{meeting_id}")
 async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
     token = websocket.query_params.get("token")
@@ -115,18 +101,33 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
         await websocket.close(code=4403, reason="Meeting access denied")
         return
 
+    meeting = db.get(Meeting, meeting_id)
+    role = participant_role(meeting_id, user.id, db)
+    settings = meeting_settings(meeting_id, db)
+    if meeting is None or settings is None or role is None:
+        db.close()
+        await websocket.close(code=4403, reason="Meeting access denied")
+        return
+    exempt = meeting.created_by_id == user.id or role == ParticipantRole.viewer
+    admitted = exempt or state_satisfies_settings(settings, False, False)
     existing_users = [connected_user_id for connected_user_id in manager.connected_users(meeting_id) if connected_user_id != user.id]
-    await manager.connect(meeting_id, user.id, websocket)
-    await manager.broadcast(
-        meeting_id,
-        {"type": "PARTICIPANT_JOINED", "payload": {**user_label(user), "at": datetime.now(timezone.utc).isoformat()}},
-        exclude=websocket,
-    )
-    roster_users = [db.get(User, connected_user_id) for connected_user_id in existing_users]
+    await manager.connect(meeting_id, user.id, websocket, admitted=admitted)
+    await websocket.send_json({"type": "MEETING_SETTINGS_UPDATED", "payload": {
+        "camera_required": settings.camera_required,
+        "microphone_required": settings.microphone_required,
+        "allow_camera_toggle": settings.allow_camera_toggle,
+        "allow_microphone_toggle": settings.allow_microphone_toggle,
+    }})
+    if admitted:
+        await manager.broadcast(
+            meeting_id,
+            {"type": "PARTICIPANT_JOINED", "payload": {**participant_presence(meeting_id, user.id, db), "at": datetime.now(timezone.utc).isoformat()}},
+            exclude=websocket,
+        )
     await websocket.send_json(
         {
             "type": "PARTICIPANT_ROSTER",
-            "payload": {"participants": [user_label(roster_user) for roster_user in roster_users if roster_user]},
+            "payload": {"participants": [participant_presence(meeting_id, connected_user_id, db) for connected_user_id in existing_users]},
         }
     )
     speech_service = get_speech_service()
@@ -225,6 +226,10 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
                 await websocket.send_json({"type": "PONG", "payload": {"at": datetime.now(timezone.utc).isoformat()}})
                 continue
             if message_type in {"OFFER", "ANSWER", "ICE_CANDIDATE"}:
+                sender_state = manager.get_media_state(websocket)
+                if sender_state is None or not sender_state.admitted:
+                    await manager.send_error(websocket, "NOT_ADMITTED", "Enable the required media before exchanging signaling.")
+                    continue
                 payload = message.get("payload") or {}
                 target_user_id = payload.get("target_user_id")
                 if not target_user_id:
@@ -238,6 +243,9 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
                 if target_id == user.id or not user_can_access_meeting(meeting_id, target_id, db):
                     await manager.send_error(websocket, "INVALID_TARGET", "The target participant is not in this meeting.")
                     continue
+                if not manager.is_admitted(meeting_id, target_id):
+                    await manager.send_error(websocket, "NOT_ADMITTED", "The target participant has not enabled the required media.")
+                    continue
                 delivered = await manager.send_to_user(
                     meeting_id,
                     target_id,
@@ -245,18 +253,87 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
                         "type": message_type,
                         "payload": {**payload, "sender_user_id": str(user.id), "sender_name": user.name},
                     },
+                    admitted_only=True,
                 )
                 if not delivered:
                     await manager.send_error(websocket, "TARGET_UNAVAILABLE", "The target participant is not connected.")
                 continue
             if message_type == "MEDIA_STATE":
+                role = participant_role(meeting_id, user.id, db)
+                if role == ParticipantRole.viewer:
+                    await manager.send_error(websocket, "FORBIDDEN_MESSAGE", "Viewers cannot send media state.")
+                    continue
+                payload = message.get("payload") or {}
+                if not isinstance(payload.get("audio_enabled"), bool) or not isinstance(payload.get("video_enabled"), bool):
+                    await manager.send_error(websocket, "INVALID_MEDIA_STATE", "Media state must contain boolean audio_enabled and video_enabled values.")
+                    continue
+                state = manager.get_media_state(websocket)
+                if state is None:
+                    await manager.send_error(websocket, "NOT_ADMITTED", "This connection is not admitted.")
+                    continue
+                settings = meeting_settings(meeting_id, db)
+                if settings is None:
+                    await manager.send_error(websocket, "MEETING_UNAVAILABLE", "Meeting settings are unavailable.")
+                    continue
+                next_audio = payload["audio_enabled"]
+                next_video = payload["video_enabled"]
+                if not (meeting.created_by_id == user.id):
+                    denied = (
+                        (state.video_enabled and not next_video and not settings.allow_camera_toggle)
+                        or (state.audio_enabled and not next_audio and not settings.allow_microphone_toggle)
+                        or (settings.camera_required and not next_video)
+                        or (settings.microphone_required and not next_audio)
+                    )
+                    if denied:
+                        server_state = {
+                            "audio_enabled": state.audio_enabled,
+                            "video_enabled": state.video_enabled,
+                            "user_id": str(user.id),
+                        }
+                        await manager.send_error(websocket, "MEDIA_TOGGLE_NOT_ALLOWED", "The current meeting settings do not allow that media change.")
+                        await websocket.send_json({"type": "MEDIA_STATE_REJECTED", "payload": server_state})
+                        continue
+                was_admitted = state.admitted
+                manager.update_media_state(
+                    websocket,
+                    admitted=(
+                        True if was_admitted or meeting.created_by_id == user.id or role == ParticipantRole.viewer
+                        or state_satisfies_settings(settings, next_audio, next_video) else False
+                    ),
+                    audio_enabled=next_audio,
+                    video_enabled=next_video,
+                )
+                if not was_admitted and state.admitted:
+                    await manager.broadcast(
+                        meeting_id,
+                        {"type": "PARTICIPANT_JOINED", "payload": {**participant_presence(meeting_id, user.id, db), "at": datetime.now(timezone.utc).isoformat()}},
+                        exclude=websocket,
+                    )
+                    admitted_roster = [connected_user_id for connected_user_id in manager.connected_users(meeting_id) if connected_user_id != user.id]
+                    await websocket.send_json({"type": "PARTICIPANT_ROSTER", "payload": {
+                        "participants": [participant_presence(meeting_id, connected_user_id, db) for connected_user_id in admitted_roster],
+                    }})
+                if not state.admitted:
+                    continue
                 await manager.broadcast(
                     meeting_id,
-                    {"type": message_type, "payload": message.get("payload", {}), "sender": user_label(user)},
+                    {
+                        "type": message_type,
+                        "payload": {
+                            "audio_enabled": next_audio,
+                            "video_enabled": next_video,
+                            "user_id": str(user.id),
+                        },
+                        "sender": user_label(user),
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    },
                     exclude=websocket,
                 )
                 continue
             if message_type == "REACTION":
+                if participant_role(meeting_id, user.id, db) == ParticipantRole.viewer:
+                    await manager.send_error(websocket, "FORBIDDEN_MESSAGE", "Viewers cannot send reactions.")
+                    continue
                 reaction = (message.get("payload") or {}).get("reaction")
                 if reaction not in {"👍", "👏", "❤️", "🎉", "😂", "❓"}:
                     await manager.send_error(websocket, "INVALID_REACTION", "Unsupported reaction.")
@@ -271,7 +348,20 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
                     },
                 )
                 continue
-            if message_type in {"TRANSCRIPT", "TRANSLATION", "MEETING_EVENT", "TASK_CREATED", "BOOKMARK", "NOTIFICATION"}:
+            if message_type in {"TRANSCRIPT", "TRANSLATION", "TASK_CREATED", "BOOKMARK", "NOTIFICATION"}:
+                await manager.send_error(websocket, "FORBIDDEN_MESSAGE", f"Clients cannot send {message_type} messages.")
+                continue
+            if message_type == "MEETING_EVENT":
+                payload = message.get("payload") or {}
+                event_name = payload.get("name")
+                allowed = event_name in {"question-created", "question-answered"}
+                if event_name == "question-timer-started":
+                    meeting = db.get(Meeting, meeting_id)
+                    allowed = bool(meeting and meeting.created_by_id == user.id)
+                if not allowed:
+                    await manager.send_error(websocket, "FORBIDDEN_MESSAGE", "This meeting event is not allowed for your account.")
+                    continue
+                # Temporary allow-list until the server-authoritative event system is implemented.
                 await manager.broadcast(
                     meeting_id,
                     {
@@ -286,31 +376,10 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        manager.disconnect(meeting_id, user.id, websocket)
+        was_connected = manager.disconnect(meeting_id, user.id, websocket)
         db.close()
-        await manager.broadcast(
-            meeting_id,
-            {"type": "PARTICIPANT_LEFT", "payload": {**user_label(user), "at": datetime.now(timezone.utc).isoformat()}},
-        )
-
-
-@development_router.post("/{meeting_id}/events/test")
-async def send_development_event(
-    meeting_id: UUID,
-    payload: DevelopmentEventRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
-) -> dict[str, str]:
-    if not user_can_access_meeting(meeting_id, current_user.id, db):
-        return {"status": "ignored"}
-    await manager.broadcast(
-        meeting_id,
-        {
-            "type": payload.type,
-            "payload": payload.payload,
-            "sender": user_label(current_user),
-            "at": datetime.now(timezone.utc).isoformat(),
-            "development": True,
-        },
-    )
-    return {"status": "broadcast"}
+        if was_connected:
+            await manager.broadcast(
+                meeting_id,
+                {"type": "PARTICIPANT_LEFT", "payload": {**user_label(user), "at": datetime.now(timezone.utc).isoformat()}},
+            )

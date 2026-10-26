@@ -24,6 +24,11 @@ class Settings(BaseSettings):
         "http://localhost:5500",
         "http://127.0.0.1:5500",
     ]
+    stun_urls: list[str] = ["stun:stun.l.google.com:19302"]
+    turn_urls: list[str] = []
+    turn_username: str | None = None
+    turn_credential: str | None = None
+    turn_shared_secret: str | None = None
     speech_enabled: bool = False
     whisper_model: str = "small"
     whisper_device: str = "cpu"

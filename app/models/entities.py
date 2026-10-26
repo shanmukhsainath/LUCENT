@@ -91,6 +91,23 @@ class Meeting(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         back_populates="meeting", cascade="all, delete-orphan", uselist=False
     )
     questions: Mapped[list["Question"]] = relationship(back_populates="meeting", cascade="all, delete-orphan")
+    settings: Mapped["MeetingSettings | None"] = relationship(
+        back_populates="meeting", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class MeetingSettings(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "meeting_settings"
+
+    meeting_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meetings.id", ondelete="CASCADE"), unique=True, index=True, nullable=False
+    )
+    camera_required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    microphone_required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    allow_camera_toggle: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    allow_microphone_toggle: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    meeting: Mapped[Meeting] = relationship(back_populates="settings")
 
 
 class Participant(UUIDPrimaryKeyMixin, TimestampMixin, Base):

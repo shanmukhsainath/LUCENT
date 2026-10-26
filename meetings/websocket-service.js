@@ -37,6 +37,12 @@ class MeetingWebSocketService {
     this.socket.addEventListener('close', (event) => {
       this.stopHeartbeat();
       this.socket = null;
+      if (event.code === 4001) {
+        this.closedByClient = true;
+        this.reconnect = false;
+        this.onError?.('This meeting was opened in another window. This tab has been disconnected.');
+        return;
+      }
       this.onStatus?.('disconnected');
       if (!this.closedByClient && this.reconnect && event.code !== 4401 && event.code !== 4403) this.scheduleReconnect();
     });

@@ -42,6 +42,22 @@ class ParticipantResponse(BaseModel):
     name: str | None = None
 
 
+class MeetingSettingsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    camera_required: bool
+    microphone_required: bool
+    allow_camera_toggle: bool
+    allow_microphone_toggle: bool
+
+
+class MeetingSettingsUpdateRequest(BaseModel):
+    camera_required: bool | None = None
+    microphone_required: bool | None = None
+    allow_camera_toggle: bool | None = None
+    allow_microphone_toggle: bool | None = None
+
+
 class MeetingResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -57,3 +73,4 @@ class MeetingResponse(BaseModel):
     status: MeetingStatus
     created_at: datetime
     participants: list[ParticipantResponse] = Field(default_factory=list)
+    settings: MeetingSettingsResponse

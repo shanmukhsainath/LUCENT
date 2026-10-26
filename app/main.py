@@ -9,7 +9,7 @@ from app.api.notes import router as notes_router
 from app.api.questions import router as questions_router
 from app.api.summaries import router as summaries_router
 from app.api.tasks import router as tasks_router
-from app.api.websocket import development_router, websocket_router
+from app.api.websocket import websocket_router
 from app.database.config import settings
 from app.database.session import engine
 
@@ -28,7 +28,6 @@ app.include_router(notes_router)
 app.include_router(questions_router)
 app.include_router(summaries_router)
 app.include_router(tasks_router)
-app.include_router(development_router)
 app.include_router(websocket_router)
 
 
