@@ -13,7 +13,16 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.dependencies import get_current_user
 from app.database.session import get_db
 from app.database.config import settings
-from app.models import Meeting, MeetingSettings, MeetingStatus, Participant, ParticipantRole, User
+from app.models import (
+    ChatMessage,
+    Meeting,
+    MeetingSettings,
+    MeetingStatus,
+    Participant,
+    ParticipantRole,
+    Transcript,
+    User,
+)
 from app.realtime.manager import manager
 from app.schemas.meetings import (
     JoinMeetingRequest,
@@ -24,6 +33,8 @@ from app.schemas.meetings import (
     MeetingSettingsUpdateRequest,
     ParticipantRoleUpdateRequest,
     ParticipantResponse,
+    ChatMessageResponse,
+    TranscriptResponse,
 )
 
 router = APIRouter(prefix="/api/meetings", tags=["meetings"])
@@ -90,9 +101,18 @@ def serialize_meeting(meeting: Meeting) -> MeetingResponse:
         )
         for participant in meeting.participants
     ]
+    host = next(
+        (
+            participant
+            for participant in meeting.participants
+            if participant.role == ParticipantRole.host
+        ),
+        None,
+    )
     return MeetingResponse(
         id=meeting.id,
         created_by_id=meeting.created_by_id,
+        host_user_id=host.user_id if host else meeting.created_by_id,
         title=meeting.title,
         description=meeting.description,
         start_time=meeting.start_time,
@@ -145,6 +165,68 @@ def get_meeting_settings(meeting_id: UUID, current_user: CurrentUser, db: DbSess
     settings = get_or_create_settings(meeting, db)
     db.commit()
     return settings_response(settings)
+
+
+@router.get("/{meeting_id}/chat", response_model=list[ChatMessageResponse])
+def get_chat_messages(meeting_id: UUID, current_user: CurrentUser, db: DbSession) -> list[ChatMessageResponse]:
+    get_authorized_meeting(meeting_id, current_user, db)
+    messages = db.scalars(
+        select(ChatMessage)
+        .where(ChatMessage.meeting_id == meeting_id)
+        .options(selectinload(ChatMessage.sender))
+        .order_by(ChatMessage.created_at.desc())
+        .limit(100)
+    ).all()
+    return [
+        ChatMessageResponse(
+            id=message.id,
+            meeting_id=message.meeting_id,
+            sender_id=message.sender_id,
+            sender_name=message.sender.name,
+            content=message.content,
+            created_at=message.created_at,
+        )
+        for message in reversed(messages)
+    ]
+
+
+@router.get("/{meeting_id}/transcripts", response_model=list[TranscriptResponse])
+def get_meeting_transcripts(
+    meeting_id: UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> list[TranscriptResponse]:
+    role = db.scalar(
+        select(Participant.role).where(
+            Participant.meeting_id == meeting_id,
+            Participant.user_id == current_user.id,
+            Participant.left_at.is_(None),
+        )
+    )
+    if role is None or role == ParticipantRole.host:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Transcript access is for participants only")
+
+    rows = db.execute(
+        select(Transcript, User.name)
+        .outerjoin(User, Transcript.speaker_id == User.id)
+        .where(Transcript.meeting_id == meeting_id)
+        .order_by(Transcript.sequence_number, Transcript.created_at, Transcript.id)
+    ).all()
+    return [
+        TranscriptResponse(
+            id=transcript.id,
+            sequence_number=transcript.sequence_number,
+            speaker_id=transcript.speaker_id,
+            speaker_name=speaker_name,
+            text=transcript.content,
+            language=transcript.language,
+            started_at=transcript.started_at,
+            ended_at=transcript.ended_at,
+            timestamp=transcript.ended_at or transcript.created_at,
+            confidence=transcript.confidence,
+        )
+        for transcript, speaker_name in rows
+    ]
 
 
 @router.get("/{meeting_id}/ice-servers")
@@ -202,7 +284,14 @@ async def update_meeting_settings(
         {"type": "MEETING_SETTINGS_UPDATED", "payload": response.model_dump()},
     )
     for user_id in manager.connected_users(meeting_id):
-        if user_id == meeting.created_by_id:
+        if db.scalar(
+            select(Participant.id).where(
+                Participant.meeting_id == meeting_id,
+                Participant.user_id == user_id,
+                Participant.role == ParticipantRole.host,
+                Participant.left_at.is_(None),
+            )
+        ):
             continue
         state = manager.get_user_media_state(meeting_id, user_id)
         if state and (
@@ -227,7 +316,16 @@ def get_meeting(meeting_id: UUID, current_user: CurrentUser, db: DbSession) -> M
 
 def get_host_meeting(meeting_id: UUID, user: User, db: Session) -> Meeting:
     meeting = db.scalar(select(Meeting).where(Meeting.id == meeting_id))
-    if meeting is None or meeting.created_by_id != user.id:
+    if meeting is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found")
+    participant = db.scalar(
+        select(Participant).where(
+            Participant.meeting_id == meeting_id,
+            Participant.user_id == user.id,
+            Participant.left_at.is_(None),
+        )
+    )
+    if participant is None or participant.role != ParticipantRole.host:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the meeting host can perform this action")
     return meeting
 
@@ -287,6 +385,7 @@ def join_meeting(
     current_user: CurrentUser,
     db: DbSession,
 ) -> MeetingResponse:
+    _ = payload
     meeting = db.scalar(select(Meeting).where(Meeting.id == meeting_id).options(selectinload(Meeting.participants)))
     if meeting is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found")
@@ -329,6 +428,64 @@ def update_participant_role(
     return serialize_meeting(get_authorized_meeting(meeting_id, current_user, db))
 
 
+@router.post("/{meeting_id}/participants/{user_id}/host", response_model=MeetingResponse)
+async def transfer_host(
+    meeting_id: UUID,
+    user_id: UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> MeetingResponse:
+    meeting = db.scalar(select(Meeting).where(Meeting.id == meeting_id).with_for_update())
+    if meeting is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found")
+
+    current_host = db.scalar(
+        select(Participant).where(
+            Participant.meeting_id == meeting_id,
+            Participant.user_id == current_user.id,
+            Participant.left_at.is_(None),
+        )
+    )
+    if current_host is None or current_host.role != ParticipantRole.host:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the current host can transfer host access")
+    if user_id == current_user.id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="You are already the meeting host")
+
+    new_host = db.scalar(
+        select(Participant).where(
+            Participant.meeting_id == meeting_id,
+            Participant.user_id == user_id,
+            Participant.left_at.is_(None),
+        )
+    )
+    if new_host is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Active participant not found")
+
+    previous_host_id = current_host.user_id
+    current_host.role = ParticipantRole.participant
+    new_host.role = ParticipantRole.host
+    db.commit()
+
+    updated_meeting = db.scalar(
+        authorized_meeting_query(current_user.id).where(Meeting.id == meeting_id)
+    )
+    if updated_meeting is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found")
+    response = serialize_meeting(updated_meeting)
+    await manager.broadcast(
+        meeting_id,
+        {
+            "type": "HOST_TRANSFERRED",
+            "payload": {
+                "previous_host_user_id": str(previous_host_id),
+                "host_user_id": str(new_host.user_id),
+                "host_name": new_host.user.name if new_host.user else None,
+            },
+        },
+    )
+    return response
+
+
 @router.delete("/{meeting_id}/participants/{user_id}", response_model=MeetingResponse)
 async def remove_participant(
     meeting_id: UUID,
@@ -361,13 +518,25 @@ async def remove_participant(
 
 
 @router.post("/{meeting_id}/leave", response_model=MeetingResponse)
-def leave_meeting(meeting_id: UUID, current_user: CurrentUser, db: DbSession) -> MeetingResponse:
+async def leave_meeting(meeting_id: UUID, current_user: CurrentUser, db: DbSession) -> MeetingResponse:
     meeting = get_authorized_meeting(meeting_id, current_user, db)
     participant = db.scalar(
-        select(Participant).where(Participant.meeting_id == meeting_id, Participant.user_id == current_user.id)
+        select(Participant).where(
+            Participant.meeting_id == meeting_id,
+            Participant.user_id == current_user.id,
+            Participant.left_at.is_(None),
+        )
     )
     if participant is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not a participant in this meeting")
     participant.left_at = datetime.now(timezone.utc)
     db.commit()
+    await manager.broadcast(
+        meeting_id,
+        {
+            "type": "PARTICIPANT_LEFT",
+            "payload": {"user_id": str(current_user.id), "name": current_user.name},
+        },
+    )
+    await manager.close_user(meeting_id, current_user.id, 4403, "Participant left the meeting")
     return serialize_meeting(meeting)

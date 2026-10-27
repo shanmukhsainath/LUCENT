@@ -1,10 +1,14 @@
 from app.models.base import Base
 from app.models.entities import (
+    ChatMessage,
     Document,
     DocumentStatus,
     Meeting,
+    MeetingQuestion,
+    MeetingQuestionAnswer,
     MeetingSettings,
     MeetingStatus,
+    MeetingTopic,
     Note,
     Participant,
     ParticipantRole,
@@ -20,11 +24,15 @@ from app.models.entities import (
 
 __all__ = [
     "Base",
+    "ChatMessage",
     "Document",
     "DocumentStatus",
     "Meeting",
+    "MeetingQuestion",
+    "MeetingQuestionAnswer",
     "MeetingSettings",
     "MeetingStatus",
+    "MeetingTopic",
     "Note",
     "Participant",
     "ParticipantRole",

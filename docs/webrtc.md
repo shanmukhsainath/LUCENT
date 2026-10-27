@@ -31,3 +31,17 @@ role and server-authoritative media state. The mesh provider retains healthy
 peers, restarts ICE for unstable connections, and recreates a failed peer
 through authenticated signaling. Opening the meeting in another tab closes
 the older socket with code `4001`.
+
+## Local camera and microphone
+
+The local preview attaches the acquired camera stream to the mounted video
+element and keeps it muted. Disabling the camera unpublishes the video sender,
+removes and stops only the camera's video track, and leaves the microphone and
+peer connections running. Enabling video later requests a fresh camera track
+and replaces the existing video sender when available; otherwise the provider
+adds a track and negotiates it. Leaving the meeting stops remaining local
+tracks and detaches the preview elements.
+
+Camera and microphone access is requested from the user's control action. The
+page must be served from HTTPS or localhost for browser media permissions.
+Permission and unavailable-device errors are shown in the meeting UI.

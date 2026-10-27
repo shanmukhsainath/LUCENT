@@ -58,11 +58,34 @@ class MeetingSettingsUpdateRequest(BaseModel):
     allow_microphone_toggle: bool | None = None
 
 
+class ChatMessageResponse(BaseModel):
+    id: UUID
+    meeting_id: UUID
+    sender_id: UUID
+    sender_name: str
+    content: str
+    created_at: datetime
+
+
+class TranscriptResponse(BaseModel):
+    id: UUID
+    sequence_number: int
+    speaker_id: UUID | None
+    speaker_name: str | None
+    text: str
+    language: str
+    started_at: datetime | None
+    ended_at: datetime | None
+    timestamp: datetime
+    confidence: float | None
+
+
 class MeetingResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     created_by: UUID = Field(validation_alias="created_by_id", serialization_alias="created_by")
+    host_user_id: UUID
     title: str
     description: str | None
     start_time: datetime | None

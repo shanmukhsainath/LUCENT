@@ -10,7 +10,8 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="dashboard.css" />
 </head>
-<body>
+<body data-theme="light">
+  <script>try { document.body.dataset.theme = localStorage.getItem('meetmind-theme') || localStorage.getItem('meetmind-room-theme') || 'light'; } catch { }</script>
   <div class="dashboard-shell">
     <aside class="sidebar" id="sidebar"></aside>
     <div class="dashboard-main">

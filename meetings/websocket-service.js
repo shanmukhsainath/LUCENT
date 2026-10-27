@@ -74,7 +74,7 @@ class MeetingWebSocketService {
   }
 
   sendAudioChunk(audioChunk) {
-    if (this.socket?.readyState !== WebSocket.OPEN || !audioChunk?.size) return false;
+    if (this.socket?.readyState !== WebSocket.OPEN || !audioChunk?.byteLength) return false;
     this.socket.send(audioChunk);
     return true;
   }

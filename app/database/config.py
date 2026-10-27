@@ -23,6 +23,12 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8000",
         "http://localhost:5500",
         "http://127.0.0.1:5500",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
     ]
     stun_urls: list[str] = ["stun:stun.l.google.com:19302"]
     turn_urls: list[str] = []
@@ -30,9 +36,9 @@ class Settings(BaseSettings):
     turn_credential: str | None = None
     turn_shared_secret: str | None = None
     speech_enabled: bool = False
-    whisper_model: str = "small"
-    whisper_device: str = "cpu"
-    whisper_compute_type: str = "int8"
+    whisper_model: str = "large-v3"
+    whisper_device: str = "auto"
+    whisper_compute_type: str = "int8_float16"
     llm_provider: str = "disabled"
     llm_api_key: str | None = None
     llm_base_url: str = "https://api.openai.com/v1"

@@ -53,3 +53,62 @@
   .sidebar{transition:none}
   .button{transition:none}
 }
+body[data-theme="dark"]{
+  color-scheme:dark;
+  --ink:#e8f0ed;
+  --muted:#a5b4af;
+  --line:#36433e;
+  --cream:#141c19;
+  --paper:#202a25;
+  --teal:#60c8b7;
+  --teal-dark:#8addcd;
+  --coral:#f08d78;
+  --gold:#e8bd70;
+}
+body[data-theme="dark"] .sidebar,
+body[data-theme="dark"] .dashboard-header,
+body[data-theme="dark"] .focus-card,
+body[data-theme="dark"] .activity-card,
+body[data-theme="dark"] .agenda-panel,
+body[data-theme="dark"] .task-panel,
+body[data-theme="dark"] .stat-card,
+body[data-theme="dark"] .meeting-card,
+body[data-theme="dark"] .task-card,
+body[data-theme="dark"] .ai-action,
+body[data-theme="dark"] .profile-dropdown,
+body[data-theme="dark"] .notification-popover,
+body[data-theme="dark"] .modal-card{
+  background-color:var(--paper);
+  border-color:var(--line);
+  color:var(--ink);
+}
+body[data-theme="dark"] .workspace-switcher,
+body[data-theme="dark"] .empty-state,
+body[data-theme="dark"] .task-card,
+body[data-theme="dark"] .action-join{
+  background:#26312c;
+  border-color:var(--line);
+  color:var(--ink);
+}
+body[data-theme="dark"] .nav-item:hover,
+body[data-theme="dark"] .nav-item.active{background:#293b35;color:#a1e2d5}
+body[data-theme="dark"] .donut:before{background:var(--paper)}
+body[data-theme="dark"] .status-pill,
+body[data-theme="dark"] .language-chip{background:#293a34;color:#a1e2d5}
+body[data-theme="dark"] .settings-card input,
+body[data-theme="dark"] .settings-card select{
+  background:#141c19;
+  border-color:var(--line);
+  color:var(--ink);
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible{
+  outline:2px solid var(--teal);
+  outline-offset:2px;
+}
+@media(max-width:600px){
+  .header-join{padding:8px;font-size:9px}
+}

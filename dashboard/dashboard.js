@@ -10,7 +10,8 @@ function meetingCard(meeting) { return `<article class="meeting-card"><div class
 function render(meetings, user) {
   const userInitials = initials(user.name);
   document.querySelector('#sidebar').innerHTML = `<div class="brand"><span class="brand-mark">✦</span><span>meetmind <small>AI</small></span></div><nav class="nav" aria-label="Primary navigation"><a class="nav-item active" href="#overview"><span>◉</span>Dashboard</a><a class="nav-item" href="#meetings"><span>◌</span>Meetings</a><a class="nav-item" href="#tasks"><span>✓</span>Tasks</a><a class="nav-item" href="#notes"><span>▤</span>Notes</a></nav><div class="sidebar-bottom"><button class="logout-button" data-action="logout">Log out</button></div>`;
-  document.querySelector('#header').innerHTML = `<button class="mobile-menu-button" data-action="toggle-menu" aria-label="Open navigation" aria-expanded="false">☰</button><div class="breadcrumb"><span>Workspace</span><span>/</span><b>Dashboard</b></div><div class="header-actions"><button class="icon-button notification-button" data-action="notifications" aria-label="Notifications" aria-expanded="false">♧</button><button class="button button-primary header-create" data-action="create-meeting"><span>＋</span> Create meeting</button><div class="profile-menu"><button class="profile-button" data-action="profile" aria-expanded="false" aria-haspopup="menu"><span class="avatar avatar-teal">${userInitials}</span><span class="profile-name">${escapeHtml(user.name)}</span><span class="chevron">⌄</span></button><div class="profile-dropdown hidden" role="menu"><div class="profile-summary"><span class="avatar avatar-teal">${userInitials}</span><span><b>${escapeHtml(user.name)}</b><small>Signed in</small></span></div><a href="#overview" role="menuitem">Dashboard</a><a href="#meetings" role="menuitem">Meetings</a><a href="#tasks" role="menuitem">Tasks</a><a href="#notes" role="menuitem">Notes</a><button data-action="logout" role="menuitem">Sign out</button></div></div></div>`;
+  document.querySelector('#header').innerHTML = `<button class="mobile-menu-button" data-action="toggle-menu" aria-label="Open navigation" aria-expanded="false">☰</button><div class="breadcrumb"><span>Workspace</span><span>/</span><b>Dashboard</b></div><div class="header-actions"><button class="icon-button theme-toggle" data-action="theme-toggle" aria-label="Switch to dark theme" title="Switch theme">☾</button><button class="icon-button notification-button" data-action="notifications" aria-label="Notifications" aria-expanded="false">♧</button><button class="button button-outline header-join" data-action="join-meeting">Join meeting</button><button class="button button-primary header-create" data-action="create-meeting"><span>＋</span> Create meeting</button><div class="profile-menu"><button class="profile-button" data-action="profile" aria-expanded="false" aria-haspopup="menu"><span class="avatar avatar-teal">${userInitials}</span><span class="profile-name">${escapeHtml(user.name)}</span><span class="chevron">⌄</span></button><div class="profile-dropdown hidden" role="menu"><div class="profile-summary"><span class="avatar avatar-teal">${userInitials}</span><span><b>${escapeHtml(user.name)}</b><small>Signed in</small></span></div><a href="#overview" role="menuitem">Dashboard</a><a href="#meetings" role="menuitem">Meetings</a><a href="#tasks" role="menuitem">Tasks</a><a href="#notes" role="menuitem">Notes</a><button data-action="logout" role="menuitem">Sign out</button></div></div></div>`;
+  applyDashboardTheme();
   if (!document.querySelector('#notificationPopover')) {
     document.body.insertAdjacentHTML('beforeend', '<div class="notification-popover hidden" id="notificationPopover" role="status"><div class="popover-heading"><b>Notifications</b></div><p class="muted">Notifications will appear here when the notification service is available.</p></div>');
   }
@@ -22,10 +23,32 @@ function render(meetings, user) {
   document.querySelector('#quickActions').innerHTML = '<p class="muted">Available with meeting content.</p>';
 }
 function logout() { sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem('meetmind_user'); window.location.replace('../login/index.html'); }
+function applyDashboardTheme(theme) {
+  let selected = theme;
+  if (!selected) {
+    try { selected = localStorage.getItem('meetmind-theme') || localStorage.getItem('meetmind-room-theme') || 'light'; } catch { selected = 'light'; }
+  }
+  const dark = selected === 'dark';
+  document.body.dataset.theme = dark ? 'dark' : 'light';
+  const button = document.querySelector('[data-action="theme-toggle"]');
+  if (button) {
+    button.textContent = dark ? '☀' : '☾';
+    button.setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} theme`);
+    button.title = `Switch to ${dark ? 'light' : 'dark'} theme`;
+  }
+}
 function handleAction(action) {
   if (action === 'logout') logout();
   if (action === 'create-meeting') window.location.href = '../meetings/create/index.html';
   if (action === 'join-meeting') window.location.href = '../meetings/join/index.html';
+  if (action === 'theme-toggle') {
+    const theme = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
+    try {
+      localStorage.setItem('meetmind-theme', theme);
+      localStorage.setItem('meetmind-room-theme', theme);
+    } catch { }
+    applyDashboardTheme(theme);
+  }
 }
 document.addEventListener('click', (event) => {
   const target = event.target.closest('[data-action]');

@@ -27,8 +27,9 @@ async function request(path, options = {}) {
     });
   } catch {
     throw new Error(
-      `Cannot reach the MeetMind API at ${API_URL}. Make sure the backend is running ` +
-        '(uvicorn app.main:app --reload), then reload this page.'
+      `Cannot reach the MeetMind API at ${API_URL}. Start the FastAPI backend with ` +
+        '"python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload" ' +
+        'or ensure the API is already running, then refresh this page.'
     );
   }
   let data = {};

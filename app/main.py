@@ -1,4 +1,6 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,16 +10,29 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.auth import router as auth_router
+from app.api.live_translation import live_translation_router
 from app.api.meetings import router as meetings_router
 from app.api.notes import router as notes_router
 from app.api.questions import router as questions_router
 from app.api.summaries import router as summaries_router
 from app.api.tasks import router as tasks_router
+from app.api.topics import router as topics_router
 from app.api.websocket import websocket_router
 from app.database.config import settings
 from app.database.session import engine
+from app.services.speech_service import get_speech_service
+from app.services.translation_service import get_translation_service
 
-app = FastAPI(title="MeetMind AI API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
+    if settings.speech_enabled:
+        await get_speech_service().initialize()
+        await get_translation_service().initialize()
+    yield
+
+
+app = FastAPI(title="MeetMind AI API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,6 +47,8 @@ app.include_router(notes_router)
 app.include_router(questions_router)
 app.include_router(summaries_router)
 app.include_router(tasks_router)
+app.include_router(topics_router)
+app.include_router(live_translation_router)
 app.include_router(websocket_router)
 
 FRONTEND_ROOT = Path(__file__).resolve().parents[1]

@@ -91,8 +91,15 @@ class Meeting(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         back_populates="meeting", cascade="all, delete-orphan", uselist=False
     )
     questions: Mapped[list["Question"]] = relationship(back_populates="meeting", cascade="all, delete-orphan")
+    scheduled_questions: Mapped[list["MeetingQuestion"]] = relationship(
+        back_populates="meeting", cascade="all, delete-orphan"
+    )
+    topics: Mapped[list["MeetingTopic"]] = relationship(back_populates="meeting", cascade="all, delete-orphan")
     settings: Mapped["MeetingSettings | None"] = relationship(
         back_populates="meeting", cascade="all, delete-orphan", uselist=False
+    )
+    chat_messages: Mapped[list["ChatMessage"]] = relationship(
+        back_populates="meeting", cascade="all, delete-orphan"
     )
 
 
@@ -108,6 +115,21 @@ class MeetingSettings(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     allow_microphone_toggle: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     meeting: Mapped[Meeting] = relationship(back_populates="settings")
+
+
+class ChatMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "chat_messages"
+
+    meeting_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sender_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+    meeting: Mapped[Meeting] = relationship(back_populates="chat_messages")
+    sender: Mapped[User] = relationship()
 
 
 class Participant(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -228,6 +250,54 @@ class Question(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     meeting: Mapped[Meeting] = relationship(back_populates="questions")
+
+
+class MeetingQuestion(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "meeting_questions"
+
+    meeting_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_by_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    scheduled_offset_seconds: Mapped[int | None] = mapped_column(Integer)
+    answer_duration_seconds: Mapped[int | None] = mapped_column(Integer)
+    show_before_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    manually_activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    meeting: Mapped[Meeting] = relationship(back_populates="scheduled_questions")
+    answers: Mapped[list["MeetingQuestionAnswer"]] = relationship(
+        back_populates="question", cascade="all, delete-orphan"
+    )
+
+
+class MeetingQuestionAnswer(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "meeting_question_answers"
+    __table_args__ = (
+        UniqueConstraint("question_id", "participant_id", name="uq_meeting_question_answers_question_participant"),
+    )
+
+    question_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("meeting_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    participant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    answered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    question: Mapped[MeetingQuestion] = relationship(back_populates="answers")
+    participant: Mapped[User] = relationship()
+
+
+class MeetingTopic(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "meeting_topics"
+
+    meeting_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_by_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    is_important: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_published: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    meeting: Mapped[Meeting] = relationship(back_populates="topics")
 
 
 class Translation(UUIDPrimaryKeyMixin, TimestampMixin, Base):

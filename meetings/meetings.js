@@ -29,7 +29,9 @@ async function createMeeting(event) {
 }
 function showMeetingConfirmation(meeting) {
   const formCard = document.querySelector('.form-card');
-  const link = `${window.location.origin}${detailPath}?id=${encodeURIComponent(meeting.id)}`;
+  const linkUrl = new URL(detailPath, window.MEETMIND_PUBLIC_URL || window.location.href);
+  linkUrl.searchParams.set('id', meeting.id);
+  const link = linkUrl.toString();
   formCard.innerHTML = `<section class="confirmation-card" aria-labelledby="confirmationTitle"><p class="eyebrow">MEETING CREATED</p><h2 id="confirmationTitle">Your meeting is ready!</h2><p class="muted">Share these details with participants, or start the meeting now.</p><dl class="meeting-details"><div><dt>Meeting title</dt><dd>${escapeHtml(meeting.title)}</dd></div><div><dt>Meeting ID</dt><dd>${escapeHtml(meeting.id)}</dd></div><div><dt>Meeting link</dt><dd><a href="${escapeHtml(link)}">${escapeHtml(link)}</a></dd></div></dl><div class="confirmation-actions"><button class="button button-secondary" type="button" data-copy-value="${escapeHtml(meeting.id)}">Copy meeting ID</button><button class="button button-secondary" type="button" data-copy-value="${escapeHtml(link)}">Copy meeting link</button><a class="button button-primary" href="${escapeHtml(link)}">Start meeting</a><a class="back-link" href="../../dashboard/index.html">Back to dashboard</a></div><p class="form-error" id="copyError" role="alert"></p></section>`;
   formCard.addEventListener('click', async (event) => {
     const button = event.target.closest('[data-copy-value]');

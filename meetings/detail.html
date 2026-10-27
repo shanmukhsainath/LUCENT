@@ -1,1 +1,37 @@
-<!doctype html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>Live workspace | MeetMind AI</title><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/><link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet"/><link rel="stylesheet" href="workspace.css"/></head><body><main class="workspace-shell"><header class="workspace-header" id="workspaceHeader"><div id="loading" class="meeting-header-copy"><h1>Loading meeting workspace...</h1><p>Checking your access</p></div></header><div class="workspace-body" id="workspaceGrid"></div><div id="controls"></div></main><div class="toast hidden" id="toast"></div><script src="websocket-service.js"></script><script src="webrtc-service.js"></script><script src="media-provider.js"></script><script src="providers/mesh-provider.js"></script><script src="workspace.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+		<title>Live workspace | MeetMind AI</title>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+Malayalam:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet" />
+		<link rel="stylesheet" href="room-tokens.css" />
+		<link rel="stylesheet" href="workspace.css" />
+		<link rel="stylesheet" href="room-layout.css" />
+		<link rel="stylesheet" href="transcription.css" />
+		<link rel="stylesheet" href="questions.css" />
+	</head>
+	<body>
+		<main class="workspace-shell" id="roomShell" data-theme="light">
+			<header class="workspace-header" id="workspaceHeader">
+				<div id="loading" class="loading-state" aria-live="polite">
+					<span class="skeleton-mark"></span>
+					<span class="skeleton-copy"><i></i><i></i></span>
+					<span class="skeleton-status"></span>
+				</div>
+			</header>
+			<div class="connection-banner" id="reconnectingBanner" hidden role="status">Reconnecting to the meeting...</div>
+			<div class="workspace-body" id="workspaceGrid"></div>
+			<div id="controls"></div>
+			<div class="toast-stack" id="toast" aria-live="polite" aria-atomic="false"></div>
+		</main>
+		<script src="icons.js"></script>
+		<script src="websocket-service.js"></script>
+		<script src="webrtc-service.js"></script>
+		<script src="media-provider.js"></script>
+		<script src="providers/mesh-provider.js"></script>
+		<script src="workspace.js"></script>
+	</body>
+</html>

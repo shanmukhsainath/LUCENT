@@ -13,10 +13,16 @@ class MeetingWebRTCService {
     return Promise.all([...this.peers.values()].map((peer) => this.syncTracks(peer)));
   }
 
+  findSender(peer, kind) {
+    return peer.connection.getTransceivers()
+      .find((transceiver) => transceiver.sender.track?.kind === kind || transceiver.receiver.track?.kind === kind)
+      ?.sender;
+  }
+
   async syncTracks(peer) {
     const tracks = this.localStream?.getTracks() || [];
     for (const track of tracks) {
-      const sender = peer.connection.getSenders().find((item) => item.track?.kind === track.kind);
+      const sender = this.findSender(peer, track.kind);
       if (sender) {
         if (sender.track?.id !== track.id) await sender.replaceTrack(track);
       } else {
@@ -31,7 +37,7 @@ class MeetingWebRTCService {
     if (!track) return Promise.resolve();
     this.localStream = stream || this.localStream;
     return Promise.all([...this.peers.values()].map(async (peer) => {
-      const sender = peer.connection.getSenders().find((item) => item.track?.kind === track.kind);
+      const sender = this.findSender(peer, track.kind);
       if (sender) await sender.replaceTrack(track);
       else {
         peer.connection.addTrack(track, this.localStream);
@@ -42,10 +48,10 @@ class MeetingWebRTCService {
   }
 
   unpublishTrack(kind) {
-    for (const peer of this.peers.values()) {
-      const sender = peer.connection.getSenders().find((item) => item.track?.kind === kind);
-      if (sender) sender.replaceTrack(null).catch(() => {});
-    }
+    return Promise.all([...this.peers.values()].map((peer) => {
+      const sender = this.findSender(peer, kind);
+      return sender?.track ? sender.replaceTrack(null) : Promise.resolve();
+    }));
   }
 
   setTrackEnabled(kind, enabled) {

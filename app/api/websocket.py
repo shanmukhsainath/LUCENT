@@ -1,18 +1,40 @@
 import json
+import asyncio
+from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import numpy as np
 import jwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.security import decode_access_token
-from app.database.session import get_db
-from app.models import Meeting, MeetingSettings, Participant, ParticipantRole, Transcript, User
+from app.database.session import SessionLocal, get_db
+from app.models import ChatMessage, Meeting, MeetingSettings, Participant, ParticipantRole, Transcript, User
 from app.realtime.manager import manager
 from app.services.speech_service import SpeechServiceError, get_speech_service
 websocket_router = APIRouter(tags=["realtime"])
+
+SAMPLE_RATE = 16_000
+SILENCE_SECONDS = 0.6
+MAX_SEGMENT_SECONDS = 6.0
+INTERIM_INTERVAL_SECONDS = 1.25
+FIRST_INTERIM_SECONDS = 1.25
+INTERIM_SILENCE_PADDING_SECONDS = 0.75
+MAX_PENDING_TRANSCRIPT_JOBS = 4
+MAX_AUDIO_CHUNK_BYTES = 64_000
+MIN_SPEECH_RMS = 250
+
+
+@dataclass(frozen=True)
+class TranscriptJob:
+    utterance_id: int
+    audio_epoch: int
+    audio: bytes
+    final: bool
 
 
 def authenticated_user_from_token(token: str, db: Session) -> User | None:
@@ -25,17 +47,11 @@ def authenticated_user_from_token(token: str, db: Session) -> User | None:
 
 
 def user_can_access_meeting(meeting_id: UUID, user_id: UUID, db: Session) -> bool:
-    participant_access = exists(
+    return db.scalar(
         select(Participant.id).where(
-            Participant.meeting_id == Meeting.id,
+            Participant.meeting_id == meeting_id,
             Participant.user_id == user_id,
             Participant.left_at.is_(None),
-        )
-    )
-    return db.scalar(
-        select(Meeting.id).where(
-            Meeting.id == meeting_id,
-            or_(Meeting.created_by_id == user_id, participant_access),
         )
     ) is not None
 
@@ -108,7 +124,7 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
         db.close()
         await websocket.close(code=4403, reason="Meeting access denied")
         return
-    exempt = meeting.created_by_id == user.id or role == ParticipantRole.viewer
+    exempt = role in {ParticipantRole.host, ParticipantRole.viewer}
     admitted = exempt or state_satisfies_settings(settings, False, False)
     existing_users = [connected_user_id for connected_user_id in manager.connected_users(meeting_id) if connected_user_id != user.id]
     await manager.connect(meeting_id, user.id, websocket, admitted=admitted)
@@ -132,84 +148,238 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
     )
     speech_service = get_speech_service()
     audio_buffer = bytearray()
-    max_audio_buffer_bytes = 2_000_000
-    previous_transcript = ""
+    segment_has_voice = False
+    silent_duration = 0.0
+    noise_rms = 100.0
+    utterance_id = 0
+    audio_epoch = 0
+    last_interim_duration = 0.0
+    pending_jobs: deque[TranscriptJob] = deque()
+    job_ready = asyncio.Event()
+    job_space = asyncio.Event()
+    job_space.set()
+    worker_db = SessionLocal()
+    is_connected = True
     next_sequence = (db.scalar(
         select(func.coalesce(func.max(Transcript.sequence_number), -1) + 1).where(Transcript.meeting_id == meeting_id)
     ) or 0)
 
-    async def process_audio_chunk(audio: bytes) -> None:
-        nonlocal previous_transcript, next_sequence
-        if not audio:
-            await manager.send_error(websocket, "EMPTY_AUDIO", "The audio chunk was empty.")
-            return
-        audio_buffer.extend(audio)
-        if len(audio_buffer) > max_audio_buffer_bytes:
-            audio_buffer.clear()
-            await manager.send_error(
-                websocket,
-                "AUDIO_BUFFER_LIMIT",
-                "Audio buffering exceeded the safe limit. Please restart the microphone.",
-            )
-            return
-        # Whisper needs enough context to produce stable words; retain the buffer only in memory.
-        if len(audio_buffer) < 32_000:
-            return
-        try:
-            result = await speech_service.transcribe(bytes(audio_buffer), audio_format="webm")
-        except SpeechServiceError as error:
-            audio_buffer.clear()
-            await manager.send_error(websocket, "SPEECH_SERVICE_ERROR", str(error))
-            return
+    async def reset_audio_buffer() -> None:
+        nonlocal audio_epoch, segment_has_voice, silent_duration, last_interim_duration
+        discarded_utterance_id = utterance_id or None
+        audio_epoch += 1
         audio_buffer.clear()
-        text = result.text.strip()
-        if not text or text == previous_transcript:
-            return
-        delta = text[len(previous_transcript):].strip() if previous_transcript and text.startswith(previous_transcript) else text
-        previous_transcript = text
-        if not delta:
-            return
-        now = datetime.now(timezone.utc)
-        duration = result.end_seconds or 0
-        transcript = Transcript(
-            meeting_id=meeting_id,
-            speaker_id=user.id,
-            content=delta,
-            language=result.language or user.preferred_language,
-            sequence_number=next_sequence,
-            started_at=now - timedelta(seconds=duration),
-            ended_at=now,
-            confidence=result.confidence,
-        )
-        next_sequence += 1
-        db.add(transcript)
-        db.commit()
-        await manager.broadcast(
-            meeting_id,
-            {
-                "type": "TRANSCRIPT",
+        segment_has_voice = False
+        silent_duration = 0.0
+        last_interim_duration = 0.0
+        pending_jobs.clear()
+        job_space.set()
+        job_ready.set()
+        if discarded_utterance_id is not None:
+            message = {
+                "type": "TRANSCRIPT_DISCARDED",
                 "payload": {
-                    "transcript_id": str(transcript.id),
+                    "utterance_id": discarded_utterance_id,
+                    "speaker_id": str(user.id),
+                },
+            }
+            for participant_id in manager.connected_users(meeting_id):
+                if participant_id == user.id:
+                    continue
+                if participant_role(meeting_id, participant_id, db) not in {None, ParticipantRole.host}:
+                    await manager.send_to_user(meeting_id, participant_id, message)
+
+    async def queue_transcription(job: TranscriptJob) -> None:
+        if not job.final:
+            retained_jobs = [
+                pending for pending in pending_jobs
+                if pending.final or pending.utterance_id != job.utterance_id
+            ]
+            pending_jobs.clear()
+            pending_jobs.extend(retained_jobs)
+            if len(pending_jobs) >= MAX_PENDING_TRANSCRIPT_JOBS:
+                return
+        else:
+            latest_interim = next(
+                (
+                    pending for pending in reversed(pending_jobs)
+                    if not pending.final and pending.utterance_id == job.utterance_id
+                ),
+                None,
+            )
+            pending_jobs_copy = [pending for pending in pending_jobs if pending.final]
+            pending_jobs.clear()
+            pending_jobs.extend(pending_jobs_copy)
+            if latest_interim and len(pending_jobs) < MAX_PENDING_TRANSCRIPT_JOBS - 1:
+                pending_jobs.append(latest_interim)
+            while len(pending_jobs) >= MAX_PENDING_TRANSCRIPT_JOBS and is_connected:
+                job_space.clear()
+                await job_space.wait()
+        if not is_connected or job.audio_epoch != audio_epoch:
+            return
+        pending_jobs.append(job)
+        job_ready.set()
+
+    async def transcript_worker() -> None:
+        nonlocal next_sequence
+        try:
+            while is_connected or pending_jobs:
+                if not pending_jobs:
+                    job_ready.clear()
+                    await job_ready.wait()
+                    continue
+                job = pending_jobs.popleft()
+                job_space.set()
+                if job.audio_epoch != audio_epoch:
+                    continue
+                try:
+                    result = await speech_service.transcribe_pcm(job.audio, language=None)
+                except SpeechServiceError as error:
+                    if is_connected and job.audio_epoch == audio_epoch:
+                        await manager.send_error(websocket, "SPEECH_SERVICE_ERROR", str(error))
+                    continue
+                text = result.text.strip()
+                if not text and job.final and is_connected and job.audio_epoch == audio_epoch:
+                    message = {
+                        "type": "TRANSCRIPT_DISCARDED",
+                        "payload": {
+                            "utterance_id": job.utterance_id,
+                            "speaker_id": str(user.id),
+                        },
+                    }
+                    for participant_id in manager.connected_users(meeting_id):
+                        if participant_role(meeting_id, participant_id, worker_db) not in {None, ParticipantRole.host}:
+                            await manager.send_to_user(meeting_id, participant_id, message)
+                if (
+                    not text
+                    or not is_connected
+                    or job.audio_epoch != audio_epoch
+                ):
+                    continue
+
+                now = datetime.now(timezone.utc)
+                payload = {
+                    "utterance_id": job.utterance_id,
+                    "sequence_number": next_sequence,
                     "speaker": user.name,
                     "speaker_id": str(user.id),
-                    "text": delta,
+                    "text": text,
                     "timestamp": now.isoformat(),
-                    "language": transcript.language,
+                    "language": result.language or user.preferred_language,
                     "confidence": result.confidence,
-                },
-                "sender": user_label(user),
-                "at": now.isoformat(),
-            },
-        )
+                }
+                if not job.final:
+                    for participant_id in manager.connected_users(meeting_id):
+                        if participant_role(meeting_id, participant_id, worker_db) not in {
+                            None,
+                            ParticipantRole.host,
+                        }:
+                            await manager.send_to_user(
+                                meeting_id,
+                                participant_id,
+                                {"type": "TRANSCRIPT_INTERIM", "payload": payload},
+                            )
+                    continue
 
+                duration = result.end_seconds or 0
+                transcript = Transcript(
+                    meeting_id=meeting_id,
+                    speaker_id=user.id,
+                    content=text,
+                    language=result.language or user.preferred_language,
+                    sequence_number=next_sequence,
+                    started_at=now - timedelta(seconds=duration),
+                    ended_at=now,
+                    confidence=result.confidence,
+                )
+                next_sequence += 1
+                worker_db.add(transcript)
+                worker_db.commit()
+                payload.update({
+                    "transcript_id": str(transcript.id),
+                    "timestamp": now.isoformat(),
+                    "confidence": result.confidence,
+                })
+                message = {
+                    "type": "TRANSCRIPT",
+                    "payload": payload,
+                    "sender": user_label(user),
+                    "at": now.isoformat(),
+                }
+                for participant_id in manager.connected_users(meeting_id):
+                    if participant_role(meeting_id, participant_id, worker_db) not in {None, ParticipantRole.host}:
+                        await manager.send_to_user(meeting_id, participant_id, message)
+        finally:
+            worker_db.close()
+
+    async def finalize_audio_segment() -> None:
+        nonlocal segment_has_voice, silent_duration, last_interim_duration
+        if segment_has_voice and audio_buffer:
+            await queue_transcription(
+                TranscriptJob(utterance_id, audio_epoch, bytes(audio_buffer), True)
+            )
+        audio_buffer.clear()
+        segment_has_voice = False
+        silent_duration = 0.0
+        last_interim_duration = 0.0
+
+    async def process_audio_chunk(audio: bytes) -> None:
+        nonlocal segment_has_voice, silent_duration, noise_rms, utterance_id, last_interim_duration
+        state = manager.get_media_state(websocket)
+        if state is None or not state.audio_enabled:
+            await reset_audio_buffer()
+            return
+        if not audio or len(audio) % 2 or len(audio) > MAX_AUDIO_CHUNK_BYTES:
+            await manager.send_error(websocket, "INVALID_AUDIO", "Expected 16 kHz mono PCM int16 audio.")
+            return
+        samples = np.frombuffer(audio, dtype=np.int16)
+        if not samples.size:
+            return
+        chunk_duration = len(samples) / SAMPLE_RATE
+        rms = float(np.sqrt(np.mean(np.square(samples.astype(np.float32)))))
+        threshold = max(MIN_SPEECH_RMS, noise_rms * 2.5)
+        if rms >= threshold:
+            if not segment_has_voice:
+                utterance_id += 1
+                last_interim_duration = 0.0
+            segment_has_voice = True
+            silent_duration = 0.0
+        else:
+            noise_rms = (noise_rms * 0.95) + (rms * 0.05)
+            if not segment_has_voice:
+                return
+            silent_duration += chunk_duration
+
+        audio_buffer.extend(audio)
+        segment_duration = len(audio_buffer) / (SAMPLE_RATE * 2)
+        if segment_duration >= MAX_SEGMENT_SECONDS or silent_duration >= SILENCE_SECONDS:
+            await finalize_audio_segment()
+            return
+        if (
+            segment_duration >= FIRST_INTERIM_SECONDS
+            and segment_duration - last_interim_duration >= INTERIM_INTERVAL_SECONDS
+        ):
+            last_interim_duration = segment_duration
+            interim_audio = bytes(audio_buffer) + bytes(
+                round(SAMPLE_RATE * INTERIM_SILENCE_PADDING_SECONDS) * 2
+            )
+            await queue_transcription(
+                TranscriptJob(utterance_id, audio_epoch, interim_audio, False)
+            )
+
+    async def handle_audio_silence() -> None:
+        if audio_buffer:
+            await finalize_audio_segment()
+
+    async def handle_audio_reset() -> None:
+        await reset_audio_buffer()
+
+    worker = asyncio.create_task(transcript_worker())
     try:
         while True:
             raw_message = await websocket.receive()
             if raw_message.get("type") == "websocket.disconnect":
                 raise WebSocketDisconnect()
-            if not user_can_access_meeting(meeting_id, user.id, db):
-                await websocket.close(code=4403, reason="Meeting access revoked")
-                break
             if raw_message.get("bytes") is not None:
                 await process_audio_chunk(raw_message["bytes"])
                 continue
@@ -222,6 +392,16 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
                 continue
 
             message_type = message.get("type")
+            if message_type == "AUDIO_SILENCE":
+                state = manager.get_media_state(websocket)
+                if state is not None and state.audio_enabled:
+                    await handle_audio_silence()
+                else:
+                    await handle_audio_reset()
+                continue
+            if message_type == "AUDIO_RESET":
+                await handle_audio_reset()
+                continue
             if message_type == "PING":
                 await websocket.send_json({"type": "PONG", "payload": {"at": datetime.now(timezone.utc).isoformat()}})
                 continue
@@ -277,7 +457,7 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
                     continue
                 next_audio = payload["audio_enabled"]
                 next_video = payload["video_enabled"]
-                if not (meeting.created_by_id == user.id):
+                if role != ParticipantRole.host:
                     denied = (
                         (state.video_enabled and not next_video and not settings.allow_camera_toggle)
                         or (state.audio_enabled and not next_audio and not settings.allow_microphone_toggle)
@@ -297,12 +477,14 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
                 manager.update_media_state(
                     websocket,
                     admitted=(
-                        True if was_admitted or meeting.created_by_id == user.id or role == ParticipantRole.viewer
+                        True if was_admitted or role in {ParticipantRole.host, ParticipantRole.viewer}
                         or state_satisfies_settings(settings, next_audio, next_video) else False
                     ),
                     audio_enabled=next_audio,
                     video_enabled=next_video,
                 )
+                if not next_audio:
+                    await reset_audio_buffer()
                 if not was_admitted and state.admitted:
                     await manager.broadcast(
                         meeting_id,
@@ -348,6 +530,39 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
                     },
                 )
                 continue
+            if message_type == "CHAT_MESSAGE":
+                content = (message.get("payload") or {}).get("content")
+                if not isinstance(content, str):
+                    await manager.send_error(websocket, "INVALID_CHAT_MESSAGE", "Chat content must be text.")
+                    continue
+                content = content.strip()
+                if not content:
+                    await manager.send_error(websocket, "INVALID_CHAT_MESSAGE", "Chat content cannot be empty.")
+                    continue
+                if len(content) > 2000:
+                    await manager.send_error(websocket, "INVALID_CHAT_MESSAGE", "Chat content must be 2000 characters or fewer.")
+                    continue
+                chat_message = ChatMessage(meeting_id=meeting_id, sender_id=user.id, content=content)
+                db.add(chat_message)
+                db.commit()
+                db.refresh(chat_message)
+                await manager.broadcast(
+                    meeting_id,
+                    {
+                        "type": "CHAT_MESSAGE",
+                        "payload": {
+                            "id": str(chat_message.id),
+                            "meeting_id": str(meeting_id),
+                            "sender_id": str(user.id),
+                            "sender_name": user.name,
+                            "content": content,
+                            "created_at": chat_message.created_at.isoformat(),
+                        },
+                        "sender": user_label(user),
+                        "at": chat_message.created_at.isoformat(),
+                    },
+                )
+                continue
             if message_type in {"TRANSCRIPT", "TRANSLATION", "TASK_CREATED", "BOOKMARK", "NOTIFICATION"}:
                 await manager.send_error(websocket, "FORBIDDEN_MESSAGE", f"Clients cannot send {message_type} messages.")
                 continue
@@ -356,8 +571,7 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
                 event_name = payload.get("name")
                 allowed = event_name in {"question-created", "question-answered"}
                 if event_name == "question-timer-started":
-                    meeting = db.get(Meeting, meeting_id)
-                    allowed = bool(meeting and meeting.created_by_id == user.id)
+                    allowed = participant_role(meeting_id, user.id, db) == ParticipantRole.host
                 if not allowed:
                     await manager.send_error(websocket, "FORBIDDEN_MESSAGE", "This meeting event is not allowed for your account.")
                     continue
@@ -376,9 +590,20 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: UUID) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        await reset_audio_buffer()
+        is_connected = False
+        job_ready.set()
+        job_space.set()
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+        connection_state = manager.get_media_state(websocket)
+        was_admitted = bool(connection_state and connection_state.admitted)
         was_connected = manager.disconnect(meeting_id, user.id, websocket)
         db.close()
-        if was_connected:
+        if was_connected and was_admitted:
             await manager.broadcast(
                 meeting_id,
                 {"type": "PARTICIPANT_LEFT", "payload": {**user_label(user), "at": datetime.now(timezone.utc).isoformat()}},
