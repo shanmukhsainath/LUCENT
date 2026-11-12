@@ -82,6 +82,15 @@ def health_check() -> dict[str, str]:
         return {"status": "degraded", "database": "unreachable"}
 
 
+@app.get("/api/config/supabase", tags=["system"], include_in_schema=False)
+def supabase_config() -> dict[str, str | None]:
+    """Expose Supabase project settings to browser-side scripts without hardcoding secrets."""
+    return {
+        "url": settings.next_public_supabase_url,
+        "publishable_key": settings.next_public_supabase_publishable_key,
+    }
+
+
 @app.get("/", include_in_schema=False)
 def frontend_root() -> FileResponse:
     return FileResponse(FRONTEND_ROOT / "index.html")
